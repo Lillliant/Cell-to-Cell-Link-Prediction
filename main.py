@@ -30,14 +30,24 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load(data_path, data_name, k_neighbors):
     """Load one dataset into a PyG Data object."""
+    print(f"[LOAD] Preparing dataset '{data_name}' from '{data_path}'")
     if data_name == "tonsil":
-        return load_h5ad_graph(os.path.join(data_path, "human_tonsil_slidetags.h5ad"), k_neighbors)
+        print("[LOAD] Using tonsil h5ad loader")
+        data = load_h5ad_graph(os.path.join(data_path, "human_tonsil_slidetags.h5ad"), k_neighbors)
+        print(f"[LOAD] Loaded tonsil graph with {data.num_nodes} nodes and {data.edge_index.size(1)} edges")
+        return data
     if data_name == "myocardial_infarction":
-        return load_h5ad_graph(os.path.join(data_path, "Visium_control_P1.h5ad"), k_neighbors)
+        print("[LOAD] Using myocardial infarction h5ad loader")
+        data = load_h5ad_graph(os.path.join(data_path, "Visium_control_P1.h5ad"), k_neighbors)
+        print(f"[LOAD] Loaded myocardial_infarction graph with {data.num_nodes} nodes and {data.edge_index.size(1)} edges")
+        return data
 
     folder_path = os.path.join(data_path, data_name)
     if os.path.exists(folder_path) and os.path.isdir(folder_path):
-        return load_pancreas_folder(folder_path)
+        print(f"[LOAD] Using folder loader for '{folder_path}'")
+        data = load_pancreas_folder(folder_path)
+        print(f"[LOAD] Loaded folder graph with {data.num_nodes} nodes and {data.edge_index.size(1)} edges")
+        return data
 
     raise ValueError(
         "Unsupported data_name. Use one of: tonsil, myocardial_infarction, "
@@ -47,8 +57,10 @@ def load(data_path, data_name, k_neighbors):
 
 def preprocess(data):
     """Normalize tensor dtypes for model training."""
+    print("[PREPROCESS] Casting edge_index to long and features to float")
     data.edge_index = data.edge_index.long()
     data.x = data.x.float()
+    print(f"[PREPROCESS] Done. x shape: {tuple(data.x.shape)}, edge_index shape: {tuple(data.edge_index.shape)}")
     return data
 
 
@@ -70,6 +82,7 @@ def get_model(model_name, in_channels, cfg):
 
 def evaluate(model, split_data, hyperedge_index=None):
     """Evaluate model with ROC-AUC and Average Precision."""
+    print("[EVAL] Running evaluation on test edges")
     model.eval()
     with torch.no_grad():
         z = model(split_data.x, split_data.edge_index, hyperedge_index)
@@ -81,11 +94,18 @@ def evaluate(model, split_data, hyperedge_index=None):
     ap = average_precision_score(y_true, probs)
     fpr, tpr, _ = roc_curve(y_true, probs)
     precision, recall, _ = precision_recall_curve(y_true, probs)
+    print(f"[EVAL] Complete. AUC={auc:.4f}, AP={ap:.4f}")
     return auc, ap, fpr, tpr, precision, recall
 
 
 def train(model, train_data, test_data, cfg, hyperedge_index=None):
     """Train one model and return its test metrics."""
+    print(f"[TRAIN] Starting training for {cfg.epochs} epochs on device: {device}")
+    print(
+        "[TRAIN] Train edges: "
+        f"{train_data.edge_index.size(1)}, labeled train pairs: {train_data.edge_label_index.size(1)}, "
+        f"labeled test pairs: {test_data.edge_label_index.size(1)}"
+    )
     model = model.to(device)
     train_data = train_data.to(device)
     test_data = test_data.to(device)
@@ -112,7 +132,9 @@ def train(model, train_data, test_data, cfg, hyperedge_index=None):
         if epoch % 10 == 0 or epoch == 1:
             print(f"Epoch {epoch:03d} | Loss: {loss.item():.4f}")
 
+    print("[TRAIN] Training loop complete, starting evaluation")
     auc, ap, fpr, tpr, precision, recall = evaluate(model, test_data, hyperedge_index)
+    print("[TRAIN] Model run complete")
     return {
         "auc": float(auc),
         "ap": float(ap),
@@ -125,6 +147,7 @@ def train(model, train_data, test_data, cfg, hyperedge_index=None):
 
 def run_models(data, data_name, model_names, output_path, cfg):
     """Run a model list on the same train/test split and save per-model metrics."""
+    print(f"[SPLIT] Creating train/test split for dataset '{data_name}'")
     transform = RandomLinkSplit(
         num_val=0.0,
         num_test=cfg.test_ratio,
@@ -133,20 +156,30 @@ def run_models(data, data_name, model_names, output_path, cfg):
         neg_sampling_ratio=cfg.neg_sampling_ratio,
     )
     train_data, _, test_data = transform(data)
+    print(
+        "[SPLIT] Done. "
+        f"Train message edges: {train_data.edge_index.size(1)}, "
+        f"train labels: {train_data.edge_label_index.size(1)}, "
+        f"test labels: {test_data.edge_label_index.size(1)}"
+    )
 
     all_results = []
     out_dir = os.path.join(output_path, data_name)
     os.makedirs(out_dir, exist_ok=True)
+    print(f"[OUTPUT] Saving per-model artifacts to '{out_dir}'")
 
     for model_name in model_names:
         print(f"\n===== Training {model_name} on {data_name} =====")
+        print(f"[MODEL] Initializing model '{model_name}'")
         model = get_model(model_name, in_channels=data.x.size(1), cfg=cfg)
 
         hyperedge_index = None
         if model_name.lower() == "hgnn":
+            print("[MODEL] Building hyperedge index for HGNN")
             hyperedge_index = build_hyperedge_index(train_data.edge_index, num_nodes=train_data.num_nodes)
 
         result = train(model, train_data, test_data, cfg, hyperedge_index=hyperedge_index)
+        print(f"[PLOT] Writing ROC/PR curves for '{model_name}'")
         plot_curves(result, model_name, data_name, out_dir)
 
         summary = {
@@ -158,28 +191,38 @@ def run_models(data, data_name, model_names, output_path, cfg):
         all_results.append(summary)
         print(f"{model_name} | AUC: {result['auc']:.4f} | AP: {result['ap']:.4f}")
 
+    print(f"[OUTPUT] Writing metrics tables to '{out_dir}'")
     pd.DataFrame(all_results).to_csv(os.path.join(out_dir, "metrics.csv"), index=False)
     with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2)
+    print(f"[OUTPUT] Finished dataset '{data_name}'")
 
     return all_results
 
 
 def main(data_path, data_names, model_names, output_path, config):
     """Run end-to-end experiments for all selected datasets and models."""
+    print("[PIPELINE] Starting experiment pipeline")
     set_seed(config.seed)
+    print(f"[PIPELINE] Seed set to {config.seed}")
+    print(f"[PIPELINE] Datasets: {data_names}")
+    print(f"[PIPELINE] Models: {model_names}")
+    print(f"[PIPELINE] Output path: {output_path}")
     all_results = []
 
     for data_name in data_names:
+        print(f"\n[DATASET] Starting dataset '{data_name}'")
         data = load(data_path, data_name, k_neighbors=config.k_neighbors)
         data = preprocess(data)
         results = run_models(data, data_name, model_names, output_path, config)
         all_results.extend(results)
+        print(f"[DATASET] Completed dataset '{data_name}'")
 
     os.makedirs(output_path, exist_ok=True)
     summary_path = os.path.join(output_path, "summary_metrics.csv")
+    print(f"[OUTPUT] Writing summary metrics to '{summary_path}'")
     pd.DataFrame(all_results).to_csv(summary_path, index=False)
-    print("\nSaved summary metrics to", summary_path)
+    print("[PIPELINE] Finished. Saved summary metrics to", summary_path)
 
 
 if __name__ == "__main__":
