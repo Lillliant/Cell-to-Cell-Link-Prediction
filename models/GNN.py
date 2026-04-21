@@ -21,8 +21,10 @@ class GNNEncoder(nn.Module):
 	def forward(self, x: torch.Tensor, edge_index: torch.Tensor, hyperedge_index: torch.Tensor | None = None) -> torch.Tensor:
 		# hyperedge_index is accepted for API compatibility with other models.
 		del hyperedge_index
+		# Layer 1: aggregate neighbor information (GraphSAGE message passing).
 		x = self.conv1(x, edge_index)
 		x = torch.relu(x)
 		x = nn.functional.dropout(x, p=self.dropout, training=self.training)
+		# Layer 2: produce final node embeddings used for edge scoring.
 		x = self.conv2(x, edge_index)
 		return x

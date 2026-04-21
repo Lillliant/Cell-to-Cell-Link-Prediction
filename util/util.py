@@ -20,6 +20,7 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
+        # Keep CUDA deterministic as much as practical across runs.
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
@@ -83,6 +84,7 @@ def load_pancreas_folder(folder_path):
 
     attr_df = pd.read_csv(attr_path)
     if attr_df.shape[1] > 1:
+        # Keep only numeric feature columns (drop text/index columns if present).
         features = attr_df.select_dtypes(include=[np.number]).to_numpy()
     else:
         features = attr_df.to_numpy()
@@ -91,6 +93,7 @@ def load_pancreas_folder(folder_path):
     edge_index = load_edge_list(folder_path)
     num_nodes = max(features.shape[0], int(edge_index.max().item()) + 1)
 
+    # If edge list references extra nodes, pad missing feature rows with zeros.
     if features.shape[0] < num_nodes:
         pad_rows = num_nodes - features.shape[0]
         features = np.vstack([features, np.zeros((pad_rows, features.shape[1]), dtype=features.dtype)])
@@ -102,6 +105,7 @@ def load_h5ad_graph(h5ad_path, k_neighbors):
     """Load and preprocess h5ad data, then build a kNN graph."""
     adata = sc.read_h5ad(str(h5ad_path))
 
+    # Typical single-cell preprocessing pipeline before graph construction.
     sc.pp.filter_cells(adata, min_genes=100)
     sc.pp.filter_genes(adata, min_cells=3)
     sc.pp.normalize_total(adata, target_sum=1e4)
@@ -115,6 +119,7 @@ def load_h5ad_graph(h5ad_path, k_neighbors):
     x = to_dense_array(adata.X).astype(np.float32)
     x = np.nan_to_num(x, nan=0.0)
 
+    # Build a graph where each node connects to its nearest expression neighbors.
     adjacency = kneighbors_graph(
         x,
         n_neighbors=min(k_neighbors, max(2, x.shape[0] - 1)),
@@ -136,6 +141,7 @@ def build_hyperedge_index(edge_index, num_nodes):
     node_ids = []
     hyperedge_ids = []
     for center in range(num_nodes):
+        # Treat each node's local neighborhood (plus itself) as one hyperedge.
         members = set(neighborhoods[center])
         members.add(center)
         for node in members:
@@ -148,6 +154,7 @@ def build_hyperedge_index(edge_index, num_nodes):
 def decode(z, edge_label_index):
     """Dot-product decoder for edge prediction."""
     src, dst = edge_label_index
+    # Similar embeddings -> higher dot product -> higher link probability after sigmoid.
     return (z[src] * z[dst]).sum(dim=-1)
 
 

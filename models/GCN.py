@@ -16,8 +16,10 @@ class GCNEncoder(nn.Module):
 
 	def forward(self, x: torch.Tensor, edge_index: torch.Tensor, hyperedge_index: torch.Tensor | None = None) -> torch.Tensor:
 		del hyperedge_index
+		# GCN layer with normalized neighbor aggregation.
 		x = self.conv1(x, edge_index)
 		x = torch.relu(x)
 		x = nn.functional.dropout(x, p=self.dropout, training=self.training)
+		# Final embedding layer for link prediction decoder.
 		x = self.conv2(x, edge_index)
 		return x

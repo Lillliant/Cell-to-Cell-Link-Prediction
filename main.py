@@ -100,6 +100,7 @@ def evaluate_split(model, split_data, criterion, hyperedge_index=None):
         probs = torch.sigmoid(logits).cpu().numpy()
         y_true = split_data.edge_label.cpu().numpy()
 
+    # AUC is undefined if all labels are the same class in this split.
     auc = roc_auc_score(y_true, probs) if len(set(y_true.tolist())) > 1 else float("nan")
     ap = average_precision_score(y_true, probs)
     y_pred = (probs >= 0.5).astype(int)
@@ -160,6 +161,7 @@ def train(model, train_data, val_data, test_data, cfg, hyperedge_index=None):
         lr=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
+    # BCEWithLogitsLoss expects raw scores (logits), so we do NOT apply sigmoid before loss.
     criterion = nn.BCEWithLogitsLoss()
     history = {
         "epochs": [],
@@ -173,9 +175,12 @@ def train(model, train_data, val_data, test_data, cfg, hyperedge_index=None):
         model.train()
         optimizer.zero_grad()
 
+        # 1) Encode each node into an embedding vector.
         z = model(train_data.x, train_data.edge_index, hyperedge_index)
+        # 2) Score each candidate edge by comparing its endpoint embeddings.
         logits = decode(z, train_data.edge_label_index)
         loss = criterion(logits, train_data.edge_label.float())
+        # Standard optimization step: backprop gradients then update model weights.
         loss.backward()
         optimizer.step()
 
@@ -221,6 +226,7 @@ def run_models(data, data_name, model_names, output_path, cfg):
         num_val=cfg.val_ratio,
         num_test=cfg.test_ratio,
         is_undirected=True,
+        # Adds negative (non-edge) examples so link prediction is a binary task.
         add_negative_train_samples=True,
         neg_sampling_ratio=cfg.neg_sampling_ratio,
     )
@@ -246,6 +252,7 @@ def run_models(data, data_name, model_names, output_path, cfg):
         hyperedge_index = None
         if model_name.lower() == "hgnn":
             print("[MODEL] Building hyperedge index for HGNN")
+            # HGNN needs node->hyperedge membership instead of pairwise edges.
             hyperedge_index = build_hyperedge_index(train_data.edge_index, num_nodes=train_data.num_nodes)
 
         result = train(model, train_data, val_data, test_data, cfg, hyperedge_index=hyperedge_index)

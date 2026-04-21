@@ -17,7 +17,9 @@ class GraphTransformerEncoder(nn.Module):
 		heads: int = 4,
 	):
 		super().__init__()
+		# Transformer-style attention on graph neighborhoods with multiple heads.
 		self.conv1 = TransformerConv(in_channels, hidden_channels, heads=heads, dropout=dropout)
+		# Project back to a single embedding vector per node.
 		self.conv2 = TransformerConv(hidden_channels * heads, out_channels, heads=1, concat=False, dropout=dropout)
 		self.dropout = dropout
 

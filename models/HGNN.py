@@ -22,6 +22,7 @@ class HGNNEncoder(nn.Module):
 		del edge_index
 		if hyperedge_index is None:
 			raise ValueError("HGNNEncoder requires hyperedge_index.")
+		# Message passing happens through node-hyperedge incidence relationships.
 		x = self.conv1(x, hyperedge_index)
 		x = torch.relu(x)
 		x = nn.functional.dropout(x, p=self.dropout, training=self.training)

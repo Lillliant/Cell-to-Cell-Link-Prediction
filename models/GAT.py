@@ -17,7 +17,9 @@ class GATEncoder(nn.Module):
 		heads: int = 4,
 	):
 		super().__init__()
+		# First layer uses multi-head attention; outputs hidden_channels * heads features.
 		self.conv1 = GATConv(in_channels, hidden_channels, heads=heads, dropout=dropout)
+		# Second layer collapses to one head and returns out_channels embeddings.
 		self.conv2 = GATConv(hidden_channels * heads, out_channels, heads=1, concat=False, dropout=dropout)
 		self.dropout = dropout
 
