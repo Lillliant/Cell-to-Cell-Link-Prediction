@@ -105,6 +105,15 @@ def load_h5ad_graph(h5ad_path, k_neighbors):
     """Load and preprocess h5ad data, then build a kNN graph."""
     adata = sc.read_h5ad(str(h5ad_path))
 
+    # Fallback to counts or normalized layer if X is None (common in spatial/single-cell tools)
+    if adata.X is None:
+        if "counts" in adata.layers:
+            adata.X = adata.layers["counts"].copy()
+        elif "normalized" in adata.layers:
+            adata.X = adata.layers["normalized"].copy()
+        else:
+            raise ValueError(f"adata.X is None and no suitable layers ('counts', 'normalized') found in {h5ad_path}")
+
     # Typical single-cell preprocessing pipeline before graph construction.
     sc.pp.filter_cells(adata, min_genes=100)
     sc.pp.filter_genes(adata, min_cells=3)
