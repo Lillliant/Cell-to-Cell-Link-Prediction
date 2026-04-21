@@ -174,3 +174,35 @@ def plot_curves(result, model_name, dataset_name, output_dir):
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f"pr_{dataset_name}_{model_name}.png"), dpi=150)
     plt.close()
+
+
+def plot_training_history(history, model_name, dataset_name, output_dir):
+    """Save train/validation loss and metric curves for one model run.
+
+    The paired train/validation curves are useful for diagnosing underfitting
+    and overfitting behavior across epochs.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    epochs = history["epochs"]
+
+    plt.figure(figsize=(6, 4))
+    plt.plot(epochs, history["train_loss"], label="Train loss")
+    plt.plot(epochs, history["val_loss"], label="Validation loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("BCE loss")
+    plt.title(f"Loss history for {dataset_name} - {model_name}")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"loss_history_{dataset_name}_{model_name}.png"), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(6, 4))
+    plt.plot(epochs, history["train_auc"], label="Train AUC")
+    plt.plot(epochs, history["val_auc"], label="Validation AUC")
+    plt.xlabel("Epoch")
+    plt.ylabel("AUC")
+    plt.title(f"AUC history for {dataset_name} - {model_name}")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"auc_history_{dataset_name}_{model_name}.png"), dpi=150)
+    plt.close()

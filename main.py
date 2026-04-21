@@ -5,7 +5,16 @@ import json
 import os
 import pandas as pd
 import torch
-from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    f1_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+)
 from torch import nn
 from torch_geometric.transforms import RandomLinkSplit
 
@@ -21,6 +30,7 @@ from util.util import (
     load_h5ad_graph,
     load_pancreas_folder,
     plot_curves,
+    plot_training_history,
     set_seed,
 )
 
@@ -80,25 +90,58 @@ def get_model(model_name, in_channels, cfg):
     raise ValueError(f"Unknown model name: {model_name}")
 
 
-def evaluate(model, split_data, hyperedge_index=None):
-    """Evaluate model with ROC-AUC and Average Precision."""
-    print("[EVAL] Running evaluation on test edges")
+def evaluate_split(model, split_data, criterion, hyperedge_index=None):
+    """Evaluate one data split and return losses/scores/probabilities."""
     model.eval()
     with torch.no_grad():
         z = model(split_data.x, split_data.edge_index, hyperedge_index)
         logits = decode(z, split_data.edge_label_index)
+        loss = criterion(logits, split_data.edge_label.float()).item()
         probs = torch.sigmoid(logits).cpu().numpy()
         y_true = split_data.edge_label.cpu().numpy()
 
-    auc = roc_auc_score(y_true, probs)
+    auc = roc_auc_score(y_true, probs) if len(set(y_true.tolist())) > 1 else float("nan")
     ap = average_precision_score(y_true, probs)
-    fpr, tpr, _ = roc_curve(y_true, probs)
+    y_pred = (probs >= 0.5).astype(int)
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+    return {
+        "loss": float(loss),
+        "auc": float(auc),
+        "ap": float(ap),
+        "accuracy": float(accuracy),
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "probs": probs,
+        "y_true": y_true,
+    }
+
+
+def evaluate(model, split_data, criterion, hyperedge_index=None):
+    """Evaluate model with ROC/PR curves and classification metrics."""
+    print("[EVAL] Running evaluation on test edges")
+    metrics = evaluate_split(model, split_data, criterion, hyperedge_index)
+    probs = metrics["probs"]
+    y_true = metrics["y_true"]
+    if len(set(y_true.tolist())) > 1:
+        fpr, tpr, _ = roc_curve(y_true, probs)
+    else:
+        # Guard against degenerate splits with only one label class.
+        fpr, tpr = [0.0, 1.0], [0.0, 1.0]
     precision, recall, _ = precision_recall_curve(y_true, probs)
-    print(f"[EVAL] Complete. AUC={auc:.4f}, AP={ap:.4f}")
-    return auc, ap, fpr, tpr, precision, recall
+    print(
+        "[EVAL] Complete. "
+        f"AUC={metrics['auc']:.4f}, AP={metrics['ap']:.4f}, "
+        f"Accuracy={metrics['accuracy']:.4f}, Precision={metrics['precision']:.4f}, "
+        f"Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}"
+    )
+    return metrics, fpr, tpr, precision, recall
 
 
-def train(model, train_data, test_data, cfg, hyperedge_index=None):
+def train(model, train_data, val_data, test_data, cfg, hyperedge_index=None):
     """Train one model and return its test metrics."""
     print(f"[TRAIN] Starting training for {cfg.epochs} epochs on device: {device}")
     print(
@@ -118,6 +161,13 @@ def train(model, train_data, test_data, cfg, hyperedge_index=None):
         weight_decay=cfg.weight_decay,
     )
     criterion = nn.BCEWithLogitsLoss()
+    history = {
+        "epochs": [],
+        "train_loss": [],
+        "val_loss": [],
+        "train_auc": [],
+        "val_auc": [],
+    }
 
     for epoch in range(1, cfg.epochs + 1):
         model.train()
@@ -129,19 +179,38 @@ def train(model, train_data, test_data, cfg, hyperedge_index=None):
         loss.backward()
         optimizer.step()
 
+        # Monitor both train and validation behavior every epoch.
+        train_metrics = evaluate_split(model, train_data, criterion, hyperedge_index)
+        val_metrics = evaluate_split(model, val_data, criterion, hyperedge_index)
+        history["epochs"].append(epoch)
+        history["train_loss"].append(train_metrics["loss"])
+        history["val_loss"].append(val_metrics["loss"])
+        history["train_auc"].append(train_metrics["auc"])
+        history["val_auc"].append(val_metrics["auc"])
+
         if epoch % 10 == 0 or epoch == 1:
-            print(f"Epoch {epoch:03d} | Loss: {loss.item():.4f}")
+            print(
+                f"Epoch {epoch:03d} | "
+                f"Train loss: {train_metrics['loss']:.4f} | Val loss: {val_metrics['loss']:.4f} | "
+                f"Train AUC: {train_metrics['auc']:.4f} | Val AUC: {val_metrics['auc']:.4f}"
+            )
 
     print("[TRAIN] Training loop complete, starting evaluation")
-    auc, ap, fpr, tpr, precision, recall = evaluate(model, test_data, hyperedge_index)
+    test_metrics, fpr, tpr, precision, recall = evaluate(model, test_data, criterion, hyperedge_index)
     print("[TRAIN] Model run complete")
     return {
-        "auc": float(auc),
-        "ap": float(ap),
+        "loss": test_metrics["loss"],
+        "auc": test_metrics["auc"],
+        "ap": test_metrics["ap"],
+        "accuracy": test_metrics["accuracy"],
+        "precision_at_05": test_metrics["precision"],
+        "recall_at_05": test_metrics["recall"],
+        "f1_at_05": test_metrics["f1"],
         "fpr": fpr,
         "tpr": tpr,
         "precision": precision,
         "recall": recall,
+        "history": history,
     }
 
 
@@ -149,17 +218,18 @@ def run_models(data, data_name, model_names, output_path, cfg):
     """Run a model list on the same train/test split and save per-model metrics."""
     print(f"[SPLIT] Creating train/test split for dataset '{data_name}'")
     transform = RandomLinkSplit(
-        num_val=0.0,
+        num_val=cfg.val_ratio,
         num_test=cfg.test_ratio,
         is_undirected=True,
         add_negative_train_samples=True,
         neg_sampling_ratio=cfg.neg_sampling_ratio,
     )
-    train_data, _, test_data = transform(data)
+    train_data, val_data, test_data = transform(data)
     print(
         "[SPLIT] Done. "
         f"Train message edges: {train_data.edge_index.size(1)}, "
         f"train labels: {train_data.edge_label_index.size(1)}, "
+        f"val labels: {val_data.edge_label_index.size(1)}, "
         f"test labels: {test_data.edge_label_index.size(1)}"
     )
 
@@ -178,18 +248,29 @@ def run_models(data, data_name, model_names, output_path, cfg):
             print("[MODEL] Building hyperedge index for HGNN")
             hyperedge_index = build_hyperedge_index(train_data.edge_index, num_nodes=train_data.num_nodes)
 
-        result = train(model, train_data, test_data, cfg, hyperedge_index=hyperedge_index)
+        result = train(model, train_data, val_data, test_data, cfg, hyperedge_index=hyperedge_index)
         print(f"[PLOT] Writing ROC/PR curves for '{model_name}'")
         plot_curves(result, model_name, data_name, out_dir)
+        print(f"[PLOT] Writing train/validation history plots for '{model_name}'")
+        plot_training_history(result["history"], model_name, data_name, out_dir)
 
         summary = {
             "dataset": data_name,
             "model": model_name,
             "auc": result["auc"],
             "ap": result["ap"],
+            "accuracy": result["accuracy"],
+            "precision_at_05": result["precision_at_05"],
+            "recall_at_05": result["recall_at_05"],
+            "f1_at_05": result["f1_at_05"],
+            "test_loss": result["loss"],
         }
         all_results.append(summary)
-        print(f"{model_name} | AUC: {result['auc']:.4f} | AP: {result['ap']:.4f}")
+        print(
+            f"{model_name} | AUC: {result['auc']:.4f} | AP: {result['ap']:.4f} | "
+            f"Accuracy: {result['accuracy']:.4f} | Precision: {result['precision_at_05']:.4f} | "
+            f"Recall: {result['recall_at_05']:.4f} | F1: {result['f1_at_05']:.4f}"
+        )
 
     print(f"[OUTPUT] Writing metrics tables to '{out_dir}'")
     pd.DataFrame(all_results).to_csv(os.path.join(out_dir, "metrics.csv"), index=False)
@@ -246,6 +327,7 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", type=float, help="Dropout rate")
     parser.add_argument("--heads", type=int, help="Attention heads for GAT/GraphTransformer")
     parser.add_argument("--k_neighbors", type=int, help="kNN neighbors for h5ad graph construction")
+    parser.add_argument("--val_ratio", type=float, help="Validation split ratio for fit diagnostics")
     parser.add_argument("--seed", type=int, help="Random seed")
 
     args = parser.parse_args()
@@ -264,6 +346,7 @@ if __name__ == "__main__":
         heads=args.heads if args.heads is not None else base_cfg.heads,
         epochs=args.epochs if args.epochs is not None else base_cfg.epochs,
         k_neighbors=args.k_neighbors if args.k_neighbors is not None else base_cfg.k_neighbors,
+        val_ratio=args.val_ratio if args.val_ratio is not None else base_cfg.val_ratio,
     )
 
     data_names = [name.strip() for name in data_names_arg.split(",") if name.strip()]

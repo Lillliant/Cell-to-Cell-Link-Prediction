@@ -18,5 +18,6 @@ class TrainingConfig:
 	weight_decay: float = 1e-5
 	epochs: int = 100
 	k_neighbors: int = 10
+	val_ratio: float = 0.1
 	test_ratio: float = 0.1
 	neg_sampling_ratio: float = 1.0
